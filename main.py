@@ -1,36 +1,35 @@
-from fastapi import FastAPI
-from playwright.sync_api import sync_playwright
-import re
+# main.py
+from fastapi import FastAPI, Query
+from typing import List, Optional
+import uvicorn, re, json, pathlib
 
 app = FastAPI()
 
+# pretend you’re loading from DB; you already return this in /radars
+DATA_PATH = pathlib.Path(__file__).with_name("radars.json")
+with DATA_PATH.open(encoding="utf-8") as f:
+    RADARS = json.load(f)
+
+@app.get("/")
+def read_root():
+    return {
+        "message": "Radar API – GET /radars or /radars?route=Zenica-Sarajevo"
+    }
+
 @app.get("/radars")
-def scrape_radars():
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
-        page.goto("https://bihamk.ba/spi/radari", timeout=60000)
+def get_radars(route: Optional[str] = Query(None, description="e.g. Zenica-Sarajevo")):
+    """
+    If ?route=Zenica-Sarajevo is supplied, return only the entries whose `text`
+    contains *all* tokens (case‑insensitive). You can loosen logic if you like.
+    """
+    if not route:
+        return RADARS
 
-        card_sel = "article[wire\\:click^='loadModal']"
-        page.wait_for_selector(card_sel, timeout=15000)
-        cards = page.query_selector_all(card_sel)
+    # Split on dash, comma, space… → ['Zenica', 'Sarajevo']
+    tokens: List[str] = [t.strip() for t in re.split(r"[-,/]", route) if t.strip()]
+    pattern = re.compile("|".join(map(re.escape, tokens)), re.I)
 
-        results = []
+    return [r for r in RADARS if pattern.search(r["text"])]
 
-        for card in cards:
-            title = card.query_selector("h3").inner_text().strip()
-            radar_id = re.search(r"\d+", card.get_attribute("wire:click")).group(0)
-
-            card.click()
-            overlay_sel = "div.fixed.inset-0.z-\\[100\\]"
-            page.wait_for_selector(overlay_sel, timeout=10000)
-
-            modal_text = page.query_selector("div.text-editor").inner_text().strip()
-            results.append({"id": radar_id, "title": title, "text": modal_text})
-
-            close_btn = page.locator(f"{overlay_sel} span:has-text('Zatvori')").first
-            close_btn.click()
-            page.wait_for_selector(overlay_sel, state="hidden", timeout=10000)
-
-        browser.close()
-        return results
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)
